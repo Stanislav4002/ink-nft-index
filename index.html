@@ -137,6 +137,7 @@
   }
 
   .stats dd.pending { color: var(--rule); }
+  .stats dd small { font-family: var(--ui); font-size: 12px; font-weight: 500; color: var(--ink-dim); letter-spacing: 0; }
 
   /* -------------------------------------------------------------- controls */
   .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-block: 28px 16px; }
@@ -277,6 +278,10 @@
   .tag.odd { color: var(--amber); border-color: var(--amber); background: #fff7ed; cursor: help; }
 
   td.num { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .turn { font-weight: 700; }
+  .turn.hot  { color: var(--green); }
+  .turn.cold { color: var(--ink-dim); font-weight: 400; }
 
   .spread { display: flex; align-items: center; gap: 9px; justify-content: flex-end; }
 
@@ -453,6 +458,14 @@
         <option value="1000">1,000+</option>
       </select>
     </label>
+    <label class="pick"><span>Turnover</span>
+      <select id="minT">
+        <option value="0" selected>any</option>
+        <option value="1.25">1.25&times;+</option>
+        <option value="2">2&times;+</option>
+        <option value="3">3&times;+</option>
+      </select>
+    </label>
     <label class="chk"><input type="checkbox" id="dedupe" checked><span>Hide duplicate names</span></label>
     <input id="q" class="search" type="search" placeholder="Search name, symbol or contract address" autocomplete="off">
   </div>
@@ -466,6 +479,7 @@
           <th scope="col" class="num sortable" data-sort="holders" aria-sort="descending">Holders &darr;</th>
           <th scope="col" class="num sortable" data-sort="supply">Supply</th>
           <th scope="col" class="num sortable" data-sort="transfers">Transfers</th>
+          <th scope="col" class="num sortable" data-sort="turnover">Turnover</th>
           <th scope="col" class="num sortable" data-sort="spread">Spread</th>
         </tr>
       </thead>
@@ -514,7 +528,7 @@
   var PAGE_GAP  = 80;          // ms between pages, to stay polite to the explorer
 
   var state = { rows: [], filter: "collection", sort: "holders", dir: -1, q: "", open: null,
-                minHolders: 50, dedupe: true };
+                minHolders: 50, dedupe: true, minTurn: 0 };
   var tcache = Object.create(null);   // addr -> transfers count, or "loading"
   var activityBusy = false;
 
@@ -682,7 +696,7 @@
   function skeleton() {
     var html = "";
     for (var i = 0; i < 8; i++) {
-      html += '<tr><td colspan="6" style="padding:15px 14px"><div class="skel" style="width:' +
+      html += '<tr><td colspan="7" style="padding:15px 14px"><div class="skel" style="width:' +
               (40 + ((i * 37) % 50)) + '%"></div></td></tr>';
     }
     tbody.innerHTML = html;
@@ -690,7 +704,7 @@
 
   function failed(err) {
     tbody.innerHTML =
-      '<tr><td colspan="6"><div class="state">' +
+      '<tr><td colspan="7"><div class="state">' +
         '<h3>The chain did not answer</h3>' +
         '<p>This page reads directly from <code>' + esc(API) + '</code> in your browser. ' +
         'The request failed with: <code>' + esc(err && err.message ? err.message : String(err)) + '</code>. ' +
@@ -699,31 +713,49 @@
   }
 
   // ------------------------------------------------------------- stat totals
-  function totals() {
-    var c = 0, p = 0, h = 0, s = 0;
-    state.rows.forEach(function (r) {
-      if (r.kind === "collection") { c++; if (r.holders) h += r.holders; if (r.supply) s += r.supply; }
-      else p++;
+  function totals(shown) {
+    var p = 0;
+    state.rows.forEach(function (r) { if (r.kind !== "collection") p++; });
+
+    var h = 0, s = 0;
+    shown.forEach(function (r) {
+      if (r.holders) h += r.holders;
+      if (r.supply)  s += r.supply;
     });
-    set("sCollections", fmt(c));
+
+    var all = state.rows.length - p;
+    set("sCollections", fmt(shown.length) + (shown.length < all ? ' <small>of ' + fmt(all) + '</small>' : ''), true);
     set("sProtocol",    fmt(p));
     set("sHolders",     compact(h));
     set("sSupply",      compact(s));
   }
 
-  function set(id, v) {
+  function set(id, v, asHtml) {
     var el = document.getElementById(id);
-    el.textContent = v;
+    if (asHtml) el.innerHTML = v; else el.textContent = v;
     el.classList.remove("pending");
   }
 
   // ------------------------------------------------------------------ paint
+  // transfers / supply: how many times the average token has moved. A drop
+  // that minted and never traded again sits at about 1.
+  function turnover(r) {
+    var t = tcache[r.addr];
+    if (t === undefined || t === "loading" || t === null) return null;
+    if (!r.supply) return null;
+    return t / r.supply;
+  }
+
   function visible() {
     var q = state.q.trim().toLowerCase();
 
     var out = state.rows.filter(function (r) {
       if (state.filter !== "all" && r.kind !== state.filter) return false;
       if (state.minHolders && (r.holders === null || r.holders < state.minHolders)) return false;
+      if (state.minTurn) {
+        var tv = turnover(r);
+        if (tv === null || tv < state.minTurn) return false;
+      }
       if (!q) return true;
       return (r.name + " " + r.symbol + " " + r.addr).toLowerCase().indexOf(q) !== -1;
     });
@@ -749,8 +781,8 @@
       return (v === undefined || v === "loading") ? null : v;
     }
     out.sort(function (a, b) {
-      var x = key === "transfers" ? pickT(a) : a[key];
-      var y = key === "transfers" ? pickT(b) : b[key];
+      var x = key === "transfers" ? pickT(a) : (key === "turnover" ? turnover(a) : a[key]);
+      var y = key === "transfers" ? pickT(b) : (key === "turnover" ? turnover(b) : b[key]);
       if (x === null && y === null) return 0;
       if (x === null) return 1;      // unknown values always sink
       if (y === null) return -1;
@@ -764,7 +796,7 @@
   async function loadActivity(rows) {
     if (activityBusy) return;
     var want = [];
-    for (var i = 0; i < rows.length && want.length < 60; i++) {
+    for (var i = 0; i < rows.length && want.length < 300; i++) {
       var a = rows[i].addr;
       if (tcache[a] === undefined) want.push(a);
     }
@@ -790,12 +822,12 @@
   }
 
   function paint() {
-    totals();
     var rows = visible();
+    totals(rows);
 
     if (!rows.length) {
       tbody.innerHTML =
-        '<tr><td colspan="6"><div class="state"><h3>Nothing matches</h3>' +
+        '<tr><td colspan="7"><div class="state"><h3>Nothing matches</h3>' +
         '<p>No contract in this view matches that search.</p></div></td></tr>';
       return;
     }
@@ -821,6 +853,7 @@
               ? '<span style="color:var(--rule)">\u2026</span>'
               : (tcache[r.addr] === null ? '<span style="color:var(--ink-dim)">\u2014</span>' : fmt(tcache[r.addr]))) +
           '</td>' +
+          '<td class="num" data-label="Turnover">' + turnCell(r) + '</td>' +
           '<td class="num" data-label="Spread">' +
             (pct === null
               ? (r.odd
@@ -885,12 +918,19 @@
     );
   }
 
+  function turnCell(r) {
+    var tv = turnover(r);
+    if (tv === null) return '<span style="color:var(--rule)">\u2026</span>';
+    var cls = tv >= 3 ? "hot" : (tv < 1.25 ? "cold" : "");
+    return '<b class="turn ' + cls + '">' + (tv >= 10 ? Math.round(tv) : tv.toFixed(1)) + '\u00d7</b>';
+  }
+
   function detail(r) {
     var ratio = (r.holders !== null && r.supply)
       ? (r.supply / r.holders).toFixed(2) + " per wallet"
       : "—";
     return (
-      '<tr class="detail"><td colspan="6"><div class="dpanel">' +
+      '<tr class="detail"><td colspan="7"><div class="dpanel">' +
         '<div class="grid">' +
           '<div><div class="k">Contract</div><div class="v">' + esc(r.addr) + '</div></div>' +
           '<div><div class="k">From the list</div><div class="v">' + fmt(r.holders) + ' holders · ' + fmt(r.supply) + ' minted</div></div>' +
@@ -939,6 +979,12 @@
 
   document.getElementById("minH").addEventListener("change", function () {
     state.minHolders = Number(this.value) || 0;
+    state.open = null;
+    paint();
+  });
+
+  document.getElementById("minT").addEventListener("change", function () {
+    state.minTurn = Number(this.value) || 0;
     state.open = null;
     paint();
   });
