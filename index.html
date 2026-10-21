@@ -461,8 +461,8 @@
     </label>
     <label class="pick"><span>Activity</span>
       <select id="minT">
-        <option value="0">show everything</option>
-        <option value="1.1" selected>hide dead mints</option>
+        <option value="0" selected>show everything</option>
+        <option value="1.1">hide dead mints</option>
         <option value="1.5">traded 1.5&times;+</option>
         <option value="3">flipped 3&times;+</option>
       </select>
@@ -538,12 +538,16 @@
   var API       = "https://explorer.inkonchain.com/api/v2";
   var MAX_PAGES = 40;          // 50 rows per page
   var MASS_MINT = 50000;       // supply above this is not a collectible drop
-  var PAGE_GAP  = 80;          // ms between pages, to stay polite to the explorer
+  var PAGE_GAP  = 220;         // ms between list pages
+  var ACT_GAP   = 240;         // ms between per-contract reads
+  var ACT_WINDOW = 150;        // how many collections get measured
 
   var state = { rows: [], filter: "collection", sort: "holders", dir: -1, q: "", open: null,
-                minHolders: 50, dedupe: true, minTurn: 1.1 };
+                minHolders: 50, dedupe: true, minTurn: 0 };
   var tcache = Object.create(null);   // addr -> transfers count, or "loading"
   var activityBusy = false;
+  var listDone = false;        // measuring must not compete with the list load
+  var rateLimited = false;
 
   var tbody = document.getElementById("tbody");
   var dot   = document.getElementById("statusDot");
@@ -625,6 +629,32 @@
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
+  // The explorer rate-limits, and a 429 that is simply thrown away costs the
+  // whole page. Back off and come back instead.
+  async function req(url, tries) {
+    tries = tries === undefined ? 4 : tries;
+    var wait = 900;
+    for (var i = 0; i < tries; i++) {
+      var res;
+      try {
+        res = await fetch(url, { headers: { accept: "application/json" } });
+      } catch (e) {
+        if (i === tries - 1) throw e;
+        await sleep(wait); wait *= 2; continue;
+      }
+      if (res.status === 429) {
+        rateLimited = true;
+        var ra = Number(res.headers.get("retry-after"));
+        await sleep(isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 8000) : wait);
+        wait = Math.min(wait * 2, 8000);
+        continue;
+      }
+      if (!res.ok) throw new Error("explorer returned HTTP " + res.status);
+      return res.json();
+    }
+    throw new Error("explorer kept rate limiting the request");
+  }
+
   async function load() {
     status("", "reading contracts from ink…");
     skeleton();
@@ -637,9 +667,7 @@
 
     try {
       while (url && pages < MAX_PAGES) {
-        var res = await fetch(url, { headers: { accept: "application/json" } });
-        if (!res.ok) throw new Error("explorer returned HTTP " + res.status);
-        var data = await res.json();
+        var data = await req(url);
         var items = (data && data.items) || [];
         if (!items.length) break;
 
@@ -686,13 +714,17 @@
 
       if (!rows.length) throw new Error("the explorer returned no ERC-721 contracts");
 
+      listDone = true;
       var capped = more && pages >= MAX_PAGES;
       status("live", (capped ? "first " : "") + rows.length + " contracts" +
-             (capped ? " (more on chain)" : "") + " · live from ink · " + stamp());
+             (capped ? " (more on chain)" : "") +
+             (rateLimited ? " · explorer throttled, slowed down" : "") +
+             " · live from ink · " + stamp());
       paint();
     } catch (err) {
       console.error(err);
       if (state.rows.length) {
+        listDone = true;                       // work with what did arrive
         status("err", "partial data · " + err.message);
         paint();
       } else {
@@ -837,9 +869,9 @@
   // Transfer counts need one request per contract, so they are fetched only
   // for the rows actually on screen, in one batch, and cached.
   async function loadActivity(rows) {
-    if (activityBusy) return;
+    if (activityBusy || !listDone) return;
     var want = [];
-    for (var i = 0; i < rows.length && want.length < 300; i++) {
+    for (var i = 0; i < rows.length && want.length < ACT_WINDOW; i++) {
       var a = rows[i].addr;
       if (tcache[a] === undefined) want.push(a);
     }
@@ -851,18 +883,17 @@
     for (var j = 0; j < want.length; j++) {
       var addr = want[j];
       try {
-        var res = await fetch(API + "/tokens/" + addr + "/counters", { headers: { accept: "application/json" } });
-        var d = res.ok ? await res.json() : null;
+        var d = await req(API + "/tokens/" + addr + "/counters", 3);
         tcache[addr] = d ? num(d.transfers_count) : null;
       } catch (e) {
         tcache[addr] = null;
       }
-      if (j % 12 === 11) {
+      if (j % 10 === 9) {
         activityBusy = false;
         paint();
         activityBusy = true;
-        await sleep(40);
       }
+      await sleep(ACT_GAP);
     }
 
     activityBusy = false;
