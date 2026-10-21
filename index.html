@@ -282,6 +282,7 @@
   .turn { font-weight: 700; }
   .turn.hot  { color: var(--green); }
   .turn.cold { color: var(--ink-dim); font-weight: 400; }
+  .turn.unsure { color: var(--amber); font-weight: 500; cursor: help; }
 
   .spread { display: flex; align-items: center; gap: 9px; justify-content: flex-end; }
 
@@ -458,12 +459,12 @@
         <option value="1000">1,000+</option>
       </select>
     </label>
-    <label class="pick"><span>Turnover</span>
+    <label class="pick"><span>Activity</span>
       <select id="minT">
-        <option value="0" selected>any</option>
-        <option value="1.25">1.25&times;+</option>
-        <option value="2">2&times;+</option>
-        <option value="3">3&times;+</option>
+        <option value="0">show everything</option>
+        <option value="1.1" selected>hide dead mints</option>
+        <option value="1.5">traded 1.5&times;+</option>
+        <option value="3">flipped 3&times;+</option>
       </select>
     </label>
     <label class="chk"><input type="checkbox" id="dedupe" checked><span>Hide duplicate names</span></label>
@@ -504,6 +505,18 @@
         a more honest signal than floor price.
       </p>
       <p>
+        <strong>Turnover ranks movement, not standing.</strong>
+        It is transfers divided by supply: how often the average token has changed hands.
+        A collection sitting near 1&times; was minted and then never moved again, which is
+        the clearest sign of a drop nobody wanted. But a collection people buy and hold
+        scores low too, so the most respected names on a chain are often not the busiest
+        ones. Sort by holders for standing and by turnover for movement &mdash; neither
+        column alone is a ranking of what matters. Where the explorer contradicts its own
+        supply figure, turnover is shown with a
+        <span style="color:var(--amber);font-weight:700">~</span> and is never used to
+        hide a collection.
+      </p>
+      <p>
         <strong>What they are not.</strong>
         Floor prices and trading volume live on marketplaces, not on&#8209;chain, so they are
         deliberately absent rather than estimated. The collection / utility split is a
@@ -528,7 +541,7 @@
   var PAGE_GAP  = 80;          // ms between pages, to stay polite to the explorer
 
   var state = { rows: [], filter: "collection", sort: "holders", dir: -1, q: "", open: null,
-                minHolders: 50, dedupe: true, minTurn: 0 };
+                minHolders: 50, dedupe: true, minTurn: 1.1 };
   var tcache = Object.create(null);   // addr -> transfers count, or "loading"
   var activityBusy = false;
 
@@ -746,15 +759,19 @@
     return t / r.supply;
   }
 
+  // A turnover built on a supply figure the explorer contradicts is a guess,
+  // so it is shown greyed and never used to filter a collection out.
+  function turnSure(r) { return !r.odd; }
+
   function visible() {
     var q = state.q.trim().toLowerCase();
 
     var out = state.rows.filter(function (r) {
       if (state.filter !== "all" && r.kind !== state.filter) return false;
       if (state.minHolders && (r.holders === null || r.holders < state.minHolders)) return false;
-      if (state.minTurn) {
+      if (state.minTurn && turnSure(r)) {
         var tv = turnover(r);
-        if (tv === null || tv < state.minTurn) return false;
+        if (tv !== null && tv < state.minTurn) return false;
       }
       if (!q) return true;
       return (r.name + " " + r.symbol + " " + r.addr).toLowerCase().indexOf(q) !== -1;
@@ -921,8 +938,11 @@
   function turnCell(r) {
     var tv = turnover(r);
     if (tv === null) return '<span style="color:var(--rule)">\u2026</span>';
-    var cls = tv >= 3 ? "hot" : (tv < 1.25 ? "cold" : "");
-    return '<b class="turn ' + cls + '">' + (tv >= 10 ? Math.round(tv) : tv.toFixed(1)) + '\u00d7</b>';
+    var txt = (tv >= 10 ? Math.round(tv) : tv.toFixed(1)) + '\u00d7';
+    if (!turnSure(r))
+      return '<b class="turn unsure" title="Based on a supply figure the explorer contradicts, so treat it as approximate.">~' + txt + '</b>';
+    var cls = tv >= 3 ? "hot" : (tv < 1.2 ? "cold" : "");
+    return '<b class="turn ' + cls + '">' + txt + '</b>';
   }
 
   function detail(r) {
