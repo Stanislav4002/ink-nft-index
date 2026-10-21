@@ -438,7 +438,7 @@
 
     <dl class="stats panel">
       <div><dt>Collections</dt><dd id="sCollections" class="pending">&mdash;</dd></div>
-      <div><dt>Utility NFTs</dt><dd id="sProtocol" class="pending">&mdash;</dd></div>
+      <div><dt>Activity measured</dt><dd id="sProtocol" class="pending">&mdash;</dd></div>
       <div><dt>Holder wallets</dt><dd id="sHolders" class="pending">&mdash;</dd></div>
       <div><dt>NFTs minted</dt><dd id="sSupply" class="pending">&mdash;</dd></div>
     </dl>
@@ -477,7 +477,7 @@
         <tr>
           <th scope="col">#</th>
           <th scope="col">Collection</th>
-          <th scope="col" class="num sortable" data-sort="holders" aria-sort="descending">Holders &darr;</th>
+          <th scope="col" class="num sortable" data-sort="holders" aria-sort="descending">Holders <span class="arrow">&darr;</span></th>
           <th scope="col" class="num sortable" data-sort="supply">Supply</th>
           <th scope="col" class="num sortable" data-sort="transfers">Transfers</th>
           <th scope="col" class="num sortable" data-sort="turnover">Turnover</th>
@@ -726,6 +726,16 @@
   }
 
   // ------------------------------------------------------------- stat totals
+  function measured() {
+    var n = 0;
+    state.rows.forEach(function (r) {
+      if (r.kind !== "collection") return;
+      var v = tcache[r.addr];
+      if (v !== undefined && v !== "loading") n++;
+    });
+    return n;
+  }
+
   function totals(shown) {
     var p = 0;
     state.rows.forEach(function (r) { if (r.kind !== "collection") p++; });
@@ -738,7 +748,8 @@
 
     var all = state.rows.length - p;
     set("sCollections", fmt(shown.length) + (shown.length < all ? ' <small>of ' + fmt(all) + '</small>' : ''), true);
-    set("sProtocol",    fmt(p));
+    var m = measured();
+    set("sProtocol", fmt(m) + ' <small>of ' + fmt(all) + '</small>', true);
     set("sHolders",     compact(h));
     set("sSupply",      compact(s));
   }
@@ -763,16 +774,15 @@
   // so it is shown greyed and never used to filter a collection out.
   function turnSure(r) { return !r.odd; }
 
-  function visible() {
+  // Everything the current view covers EXCEPT the activity gate. These are the
+  // rows worth measuring, and measuring them is what the gate then needs — so
+  // the gate must never decide which rows get fetched.
+  function candidates() {
     var q = state.q.trim().toLowerCase();
 
     var out = state.rows.filter(function (r) {
       if (state.filter !== "all" && r.kind !== state.filter) return false;
       if (state.minHolders && (r.holders === null || r.holders < state.minHolders)) return false;
-      if (state.minTurn && turnSure(r)) {
-        var tv = turnover(r);
-        if (tv !== null && tv < state.minTurn) return false;
-      }
       if (!q) return true;
       return (r.name + " " + r.symbol + " " + r.addr).toLowerCase().indexOf(q) !== -1;
     });
@@ -789,6 +799,22 @@
       out = out.filter(function (r) {
         var k = (r.name || "").trim().toLowerCase();
         return !k || best[k] === r;
+      });
+    }
+
+    // measure the biggest first, so the window lands on rows people look at
+    out.sort(function (a, b) { return (b.holders || 0) - (a.holders || 0); });
+    return out;
+  }
+
+  function visible() {
+    var out = candidates();
+
+    if (state.minTurn) {
+      out = out.filter(function (r) {
+        var tv = turnover(r);
+        if (tv === null) return false;            // not measured yet - cannot vouch for it
+        return !turnSure(r) || tv >= state.minTurn;
       });
     }
 
@@ -831,7 +857,12 @@
       } catch (e) {
         tcache[addr] = null;
       }
-      if (j % 12 === 11) await sleep(40);
+      if (j % 12 === 11) {
+        activityBusy = false;
+        paint();
+        activityBusy = true;
+        await sleep(40);
+      }
     }
 
     activityBusy = false;
@@ -839,13 +870,21 @@
   }
 
   function paint() {
+    var base = candidates();
     var rows = visible();
     totals(rows);
 
+    // kick the loader first: with an activity filter on, the view starts empty
+    // and would otherwise never ask for the data that fills it.
+    loadActivity(base);
+
     if (!rows.length) {
-      tbody.innerHTML =
-        '<tr><td colspan="7"><div class="state"><h3>Nothing matches</h3>' +
-        '<p>No contract in this view matches that search.</p></div></td></tr>';
+      var waiting = state.minTurn && base.length && measured() < base.length;
+      tbody.innerHTML = waiting
+        ? '<tr><td colspan="7"><div class="state"><h3>Measuring activity</h3>' +
+          '<p>Reading transfer counts for ' + fmt(base.length) + ' contracts. Rows appear as each one comes back.</p></div></td></tr>'
+        : '<tr><td colspan="7"><div class="state"><h3>Nothing matches</h3>' +
+          '<p>No contract in this view clears these filters.</p></div></td></tr>';
       return;
     }
 
@@ -884,7 +923,6 @@
     }
     tbody.innerHTML = html;
     if (state.open) verify(state.open);
-    loadActivity(rows);
   }
 
   // The explorer's list endpoint serves cached counters that do not always
