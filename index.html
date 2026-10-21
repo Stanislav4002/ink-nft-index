@@ -161,6 +161,34 @@
   .seg button[aria-pressed="true"] { background: var(--violet); color: #fff; }
   .seg button:focus-visible { outline: 3px solid var(--violet); outline-offset: 2px; }
 
+  .pick, .chk {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--paper-2);
+    border: 2px solid var(--ink);
+    border-radius: 10px;
+    padding: 7px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .pick span, .chk span { color: var(--ink-soft); }
+  .pick select {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--ink);
+    cursor: pointer;
+    padding-right: 2px;
+  }
+  .pick select:focus-visible, .chk input:focus-visible { outline: 3px solid var(--violet); outline-offset: 2px; }
+  .chk input { width: 15px; height: 15px; accent-color: var(--violet); cursor: pointer; margin: 0; }
+  .chk { cursor: pointer; }
+
   .search {
     flex: 1 1 210px;
     min-width: 0;
@@ -416,6 +444,16 @@
       <button type="button" data-filter="protocol" aria-pressed="false">Utility</button>
       <button type="button" data-filter="all" aria-pressed="false">All</button>
     </div>
+    <label class="pick"><span>Min holders</span>
+      <select id="minH">
+        <option value="0">any</option>
+        <option value="10">10+</option>
+        <option value="50" selected>50+</option>
+        <option value="250">250+</option>
+        <option value="1000">1,000+</option>
+      </select>
+    </label>
+    <label class="chk"><input type="checkbox" id="dedupe" checked><span>Hide duplicate names</span></label>
     <input id="q" class="search" type="search" placeholder="Search name, symbol or contract address" autocomplete="off">
   </div>
 
@@ -427,6 +465,7 @@
           <th scope="col">Collection</th>
           <th scope="col" class="num sortable" data-sort="holders" aria-sort="descending">Holders &darr;</th>
           <th scope="col" class="num sortable" data-sort="supply">Supply</th>
+          <th scope="col" class="num sortable" data-sort="transfers">Transfers</th>
           <th scope="col" class="num sortable" data-sort="spread">Spread</th>
         </tr>
       </thead>
@@ -474,7 +513,10 @@
   var MASS_MINT = 50000;       // supply above this is not a collectible drop
   var PAGE_GAP  = 80;          // ms between pages, to stay polite to the explorer
 
-  var state = { rows: [], filter: "collection", sort: "holders", dir: -1, q: "", open: null };
+  var state = { rows: [], filter: "collection", sort: "holders", dir: -1, q: "", open: null,
+                minHolders: 50, dedupe: true };
+  var tcache = Object.create(null);   // addr -> transfers count, or "loading"
+  var activityBusy = false;
 
   var tbody = document.getElementById("tbody");
   var dot   = document.getElementById("statusDot");
@@ -640,7 +682,7 @@
   function skeleton() {
     var html = "";
     for (var i = 0; i < 8; i++) {
-      html += '<tr><td colspan="5" style="padding:15px 14px"><div class="skel" style="width:' +
+      html += '<tr><td colspan="6" style="padding:15px 14px"><div class="skel" style="width:' +
               (40 + ((i * 37) % 50)) + '%"></div></td></tr>';
     }
     tbody.innerHTML = html;
@@ -648,7 +690,7 @@
 
   function failed(err) {
     tbody.innerHTML =
-      '<tr><td colspan="5"><div class="state">' +
+      '<tr><td colspan="6"><div class="state">' +
         '<h3>The chain did not answer</h3>' +
         '<p>This page reads directly from <code>' + esc(API) + '</code> in your browser. ' +
         'The request failed with: <code>' + esc(err && err.message ? err.message : String(err)) + '</code>. ' +
@@ -678,15 +720,37 @@
   // ------------------------------------------------------------------ paint
   function visible() {
     var q = state.q.trim().toLowerCase();
+
     var out = state.rows.filter(function (r) {
       if (state.filter !== "all" && r.kind !== state.filter) return false;
+      if (state.minHolders && (r.holders === null || r.holders < state.minHolders)) return false;
       if (!q) return true;
       return (r.name + " " + r.symbol + " " + r.addr).toLowerCase().indexOf(q) !== -1;
     });
 
+    // Ink carries a lot of copycat contracts reusing a known collection's name.
+    // Keep the one with the most holders and drop the rest from the default view.
+    if (state.dedupe) {
+      var best = Object.create(null);
+      out.forEach(function (r) {
+        var k = (r.name || "").trim().toLowerCase();
+        if (!k) return;
+        if (!best[k] || (r.holders || 0) > (best[k].holders || 0)) best[k] = r;
+      });
+      out = out.filter(function (r) {
+        var k = (r.name || "").trim().toLowerCase();
+        return !k || best[k] === r;
+      });
+    }
+
     var key = state.sort, dir = state.dir;
+    function pickT(r) {
+      var v = tcache[r.addr];
+      return (v === undefined || v === "loading") ? null : v;
+    }
     out.sort(function (a, b) {
-      var x = a[key], y = b[key];
+      var x = key === "transfers" ? pickT(a) : a[key];
+      var y = key === "transfers" ? pickT(b) : b[key];
       if (x === null && y === null) return 0;
       if (x === null) return 1;      // unknown values always sink
       if (y === null) return -1;
@@ -695,13 +759,43 @@
     return out;
   }
 
+  // Transfer counts need one request per contract, so they are fetched only
+  // for the rows actually on screen, in one batch, and cached.
+  async function loadActivity(rows) {
+    if (activityBusy) return;
+    var want = [];
+    for (var i = 0; i < rows.length && want.length < 60; i++) {
+      var a = rows[i].addr;
+      if (tcache[a] === undefined) want.push(a);
+    }
+    if (!want.length) return;
+
+    activityBusy = true;
+    want.forEach(function (a) { tcache[a] = "loading"; });
+
+    for (var j = 0; j < want.length; j++) {
+      var addr = want[j];
+      try {
+        var res = await fetch(API + "/tokens/" + addr + "/counters", { headers: { accept: "application/json" } });
+        var d = res.ok ? await res.json() : null;
+        tcache[addr] = d ? num(d.transfers_count) : null;
+      } catch (e) {
+        tcache[addr] = null;
+      }
+      if (j % 12 === 11) await sleep(40);
+    }
+
+    activityBusy = false;
+    paint();
+  }
+
   function paint() {
     totals();
     var rows = visible();
 
     if (!rows.length) {
       tbody.innerHTML =
-        '<tr><td colspan="5"><div class="state"><h3>Nothing matches</h3>' +
+        '<tr><td colspan="6"><div class="state"><h3>Nothing matches</h3>' +
         '<p>No contract in this view matches that search.</p></div></td></tr>';
       return;
     }
@@ -722,6 +816,11 @@
           '</span></div></td>' +
           '<td class="num" data-label="Holders">' + fmt(r.holders) + '</td>' +
           '<td class="num" data-label="Supply">' + fmt(r.supply) + '</td>' +
+          '<td class="num" data-label="Transfers">' +
+            (tcache[r.addr] === undefined || tcache[r.addr] === "loading"
+              ? '<span style="color:var(--rule)">\u2026</span>'
+              : (tcache[r.addr] === null ? '<span style="color:var(--ink-dim)">\u2014</span>' : fmt(tcache[r.addr]))) +
+          '</td>' +
           '<td class="num" data-label="Spread">' +
             (pct === null
               ? (r.odd
@@ -734,6 +833,56 @@
       if (state.open === r.addr) html += detail(r);
     }
     tbody.innerHTML = html;
+    if (state.open) verify(state.open);
+    loadActivity(rows);
+  }
+
+  // The explorer's list endpoint serves cached counters that do not always
+  // agree with its own per-token endpoint. Rather than silently pick a winner,
+  // open rows re-read the token directly and show both figures.
+  var vcache = Object.create(null);
+
+  async function verify(addr) {
+    if (vcache[addr]) return;
+    vcache[addr] = "loading";
+    try {
+      var r = await Promise.all([
+        fetch(API + "/tokens/" + addr, { headers: { accept: "application/json" } }),
+        fetch(API + "/tokens/" + addr + "/counters", { headers: { accept: "application/json" } })
+      ]);
+      var tok = r[0].ok ? await r[0].json() : null;
+      var cnt = r[1].ok ? await r[1].json() : null;
+      vcache[addr] = {
+        holders:   tok ? num(tok.holders_count) : null,
+        supply:    tok ? num(tok.total_supply)  : null,
+        transfers: cnt ? num(cnt.transfers_count) : null
+      };
+    } catch (e) {
+      vcache[addr] = "error";
+    }
+    if (state.open === addr) paint();
+  }
+
+  function verifyBlock(r) {
+    var v = vcache[r.addr];
+
+    if (!v || v === "loading")
+      return '<div><div class="k">Re-read from chain</div><div class="v" style="color:var(--ink-dim)">checking…</div></div>';
+
+    if (v === "error")
+      return '<div><div class="k">Re-read from chain</div><div class="v" style="color:var(--ink-dim)">could not reach the token endpoint</div></div>';
+
+    var same = v.holders === r.holders && v.supply === r.supply;
+    var line = fmt(v.holders) + " holders · " + fmt(v.supply) + " minted";
+
+    return (
+      '<div><div class="k">Re-read from chain</div><div class="v">' + line +
+        (same ? '' : ' <span class="tag odd" title="The explorer\'s list and token endpoints return different counters for this contract.">differs from the list</span>') +
+      '</div></div>' +
+      (v.transfers !== null
+        ? '<div><div class="k">Transfers all time</div><div class="v">' + fmt(v.transfers) + '</div></div>'
+        : '')
+    );
   }
 
   function detail(r) {
@@ -741,9 +890,11 @@
       ? (r.supply / r.holders).toFixed(2) + " per wallet"
       : "—";
     return (
-      '<tr class="detail"><td colspan="5"><div class="dpanel">' +
+      '<tr class="detail"><td colspan="6"><div class="dpanel">' +
         '<div class="grid">' +
           '<div><div class="k">Contract</div><div class="v">' + esc(r.addr) + '</div></div>' +
+          '<div><div class="k">From the list</div><div class="v">' + fmt(r.holders) + ' holders · ' + fmt(r.supply) + ' minted</div></div>' +
+          verifyBlock(r) +
           '<div><div class="k">Average held</div><div class="v">' + ratio + '</div></div>' +
           '<div><div class="k">Classified as</div><div class="v">' + esc(r.why) + '</div></div>' +
         '</div>' +
@@ -784,6 +935,18 @@
       th.insertAdjacentHTML("beforeend", ' <span class="arrow">' + (state.dir === -1 ? "↓" : "↑") + "</span>");
       paint();
     });
+  });
+
+  document.getElementById("minH").addEventListener("change", function () {
+    state.minHolders = Number(this.value) || 0;
+    state.open = null;
+    paint();
+  });
+
+  document.getElementById("dedupe").addEventListener("change", function () {
+    state.dedupe = this.checked;
+    state.open = null;
+    paint();
   });
 
   var q = document.getElementById("q");
