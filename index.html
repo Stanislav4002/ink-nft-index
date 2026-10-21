@@ -246,6 +246,7 @@
     white-space: nowrap;
   }
   .tag.collection { color: var(--violet); border-color: var(--violet); background: var(--violet-2); }
+  .tag.odd { color: var(--amber); border-color: var(--amber); background: #fff7ed; cursor: help; }
 
   td.num { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
@@ -391,7 +392,7 @@
         <h1>Every NFT<br>on <em>Ink</em>.</h1>
         <p class="lede">
           One list of every ERC&#8209;721 contract on the chain, read live from Ink itself.
-          Protocol NFTs are kept apart from real collections, so what you see is what
+          Utility NFTs are kept apart from real collections, so what you see is what
           people actually collect.
         </p>
       </div>
@@ -403,7 +404,7 @@
 
     <dl class="stats panel">
       <div><dt>Collections</dt><dd id="sCollections" class="pending">&mdash;</dd></div>
-      <div><dt>Protocol NFTs</dt><dd id="sProtocol" class="pending">&mdash;</dd></div>
+      <div><dt>Utility NFTs</dt><dd id="sProtocol" class="pending">&mdash;</dd></div>
       <div><dt>Holder wallets</dt><dd id="sHolders" class="pending">&mdash;</dd></div>
       <div><dt>NFTs minted</dt><dd id="sSupply" class="pending">&mdash;</dd></div>
     </dl>
@@ -412,7 +413,7 @@
   <div class="controls">
     <div class="seg" role="group" aria-label="Filter by contract kind">
       <button type="button" data-filter="collection" aria-pressed="true">Collections</button>
-      <button type="button" data-filter="protocol" aria-pressed="false">Protocol</button>
+      <button type="button" data-filter="protocol" aria-pressed="false">Utility</button>
       <button type="button" data-filter="all" aria-pressed="false">All</button>
     </div>
     <input id="q" class="search" type="search" placeholder="Search name, symbol or contract address" autocomplete="off">
@@ -452,8 +453,8 @@
       <p>
         <strong>What they are not.</strong>
         Floor prices and trading volume live on marketplaces, not on&#8209;chain, so they are
-        deliberately absent rather than estimated. The collection / protocol split is a
-        heuristic: every row shows the reason it was classified, and the Protocol tab shows
+        deliberately absent rather than estimated. The collection / utility split is a
+        heuristic: every row shows the reason it was classified, and the Utility tab shows
         everything filtered out, so nothing hides behind the judgement.
       </p>
     </div>
@@ -469,9 +470,9 @@
   "use strict";
 
   var API       = "https://explorer.inkonchain.com/api/v2";
-  var MAX_PAGES = 12;          // 50 rows per page
+  var MAX_PAGES = 40;          // 50 rows per page
   var MASS_MINT = 50000;       // supply above this is not a collectible drop
-  var PAGE_GAP  = 120;         // ms between pages, to stay polite to the explorer
+  var PAGE_GAP  = 80;          // ms between pages, to stay polite to the explorer
 
   var state = { rows: [], filter: "collection", sort: "holders", dir: -1, q: "", open: null };
 
@@ -485,6 +486,7 @@
     { re: /\b(position|liquidity|slipstream|concentrated)\b/i,        why: "LP position" },
     { re: /(^|[^a-z])(pos|lp)([^a-z]|$)/i,            field: "symbol", why: "LP position" },
     { re: /\b(cube|galxe|oat|quest|badge|poap|attendance|achievement|reward)\b/i, why: "Quest badge" },
+    { re: /\b(pin|pass|ticket|voucher|certificate|proof|supporter|contributor|airdrop|claim|og|whitelist|allowlist|early|genesis pass)\b/i, why: "Badge or pass" },
     { re: /\b(domain|name service|registrar|ens)\b/i,                 why: "Naming service" },
     { re: /\b(vault|debt|receipt|stake|staked|lock|bond|escrow|gauge)\b/i, why: "Protocol receipt" },
     { re: /\b(voting escrow|ve[A-Z]{2,})\b/,                          why: "Protocol receipt" }
@@ -498,6 +500,8 @@
       if (r.re.test(subject)) return { kind: "protocol", why: r.why };
     }
     if (t.supply !== null && t.supply > MASS_MINT) return { kind: "protocol", why: "Mass mint" };
+    if (t.supply !== null && t.supply >= 10000 && t.ratio !== null && t.ratio >= 0.60)
+      return { kind: "protocol", why: "One per wallet" };
     if (t.supply === null) return { kind: "protocol", why: "No supply reported" };
     return { kind: "collection", why: "Collection" };
   }
@@ -560,6 +564,7 @@
     var seen = Object.create(null);
     var rows = [];
     var pages = 0;
+    var more = false;   // true while the explorer still has another page to give
 
     try {
       while (url && pages < MAX_PAGES) {
@@ -584,7 +589,13 @@
             holders: num(t.holders_count),
             supply:  num(t.total_supply)
           };
-          row.spread = (row.holders !== null && row.supply) ? Math.min(1, row.holders / row.supply) : null;
+          // More holders than tokens is impossible for ERC-721, so the supply the
+          // explorer reports is stale or non-standard. Flag it rather than smooth it.
+          row.odd = (row.holders !== null && row.supply !== null && row.supply > 0 && row.holders > row.supply);
+          // ratio drives classification and may exceed 1; spread is for display
+          // only and is withheld when the supply figure cannot be trusted.
+          row.ratio  = (row.holders !== null && row.supply) ? row.holders / row.supply : null;
+          row.spread = (!row.odd && row.ratio !== null) ? Math.min(1, row.ratio) : null;
           var c = classify(row);
           row.kind = c.kind;
           row.why  = c.why;
@@ -596,16 +607,19 @@
         paint();
 
         // Guard: if a page adds nothing new, the cursor is not advancing.
-        if (fresh === 0) break;
+        if (fresh === 0) { more = false; break; }
         var np = data.next_page_params;
-        if (!np || typeof np !== "object") break;
+        if (!np || typeof np !== "object") { more = false; break; }
+        more = true;
         url = nextUrl(np);
         await sleep(PAGE_GAP);
       }
 
       if (!rows.length) throw new Error("the explorer returned no ERC-721 contracts");
 
-      status("live", rows.length + " contracts · live from ink · " + stamp());
+      var capped = more && pages >= MAX_PAGES;
+      status("live", (capped ? "first " : "") + rows.length + " contracts" +
+             (capped ? " (more on chain)" : "") + " · live from ink · " + stamp());
       paint();
     } catch (err) {
       console.error(err);
@@ -710,7 +724,9 @@
           '<td class="num" data-label="Supply">' + fmt(r.supply) + '</td>' +
           '<td class="num" data-label="Spread">' +
             (pct === null
-              ? '<span style="color:var(--fg-dim)">—</span>'
+              ? (r.odd
+                  ? '<span class="tag odd" title="The explorer reports more holders than tokens, so its supply figure cannot be right.">supply unreliable</span>'
+                  : '<span style="color:var(--ink-dim)">—</span>')
               : '<span class="spread"><span class="bar"><i class="' + tone.trim() + '" style="width:' + pct + '%"></i></span><b>' + pct + '%</b></span>') +
           '</td>' +
         '</tr>';
