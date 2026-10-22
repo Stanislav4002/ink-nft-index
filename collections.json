@@ -1,26 +1,135 @@
 {
   "_readme": [
-    "Verified Ink NFT collections, curated by hand.",
+    "Verified Ink NFT collections, curated by hand by @xDStani.",
     "",
     "Authenticity is not something a blockchain records. Anyone can deploy a",
-    "contract called PRTSCN, and several people have. The only way to tell the",
-    "real one is for a person who knows the ecosystem to say so - which is what",
-    "this file is.",
+    "contract under a known collection's name, and on Ink several people have.",
+    "The only way to tell the original is for someone who knows the ecosystem",
+    "to say so - which is what this file is.",
     "",
-    "To add a collection: copy its address from the site (open a row, press",
-    "'Copy JSON entry') and paste the line into the list below. Commit the file.",
-    "Vercel redeploys on its own and the site picks it up.",
+    "To update: open the site, press Curate, tick the real contracts, press",
+    "Export collections.json, and paste the result over this file. The site",
+    "works without this list; curation only makes it sharper.",
     "",
-    "Fields: address is required. name is for your own reference only - the site",
-    "always shows the name the contract itself reports. x and note are optional."
+    "address is required. name is for your own reference - the site always",
+    "shows the name the contract itself reports."
   ],
-
   "collections": [
     {
+      "address": "0x1DC9a006785c7C280dA676d3916aa29307B9D9F5",
+      "name": "ANITA"
+    },
+    {
+      "address": "0x63FEbFa0a5474803F4261a1628763b1B2cC3AB83",
+      "name": "BOI"
+    },
+    {
+      "address": "0x3132e1e8C7a46638b2dF26b9252ac5d88D9E04C5",
+      "name": "Boink"
+    },
+    {
+      "address": "0x9234d821C10B72E09C594f882f1d5dACF2621006",
+      "name": "Eye of the Seeker"
+    },
+    {
+      "address": "0xbCE4247dD746788F590ed8eEB0c24754013b1668",
+      "name": "iBunnies"
+    },
+    {
+      "address": "0x0E4AA738d2CBe8C1f3D4e46A1f1AF33611365a5F",
+      "name": "Ink Brokers"
+    },
+    {
+      "address": "0x4443970B315d3c08C2f962fe00770c52396AFDb7",
+      "name": "INK Bunnies"
+    },
+    {
+      "address": "0x8451E40245a60544377d9492f6239000E3879020",
+      "name": "Ink Cult"
+    },
+    {
+      "address": "0x4d243f15743F6df7C832Fcd5Ee9A3e8453D47a4B",
+      "name": "Ink Hornet"
+    },
+    {
+      "address": "0x9662fBB63dDB4b8b0B638071b0276AF4027A3b58",
+      "name": "Ink Kitties"
+    },
+    {
+      "address": "0x8C2A8aFb1E6F4216a534dF5E20050Db99950C2b5",
+      "name": "Inks"
+    },
+    {
+      "address": "0xd0282f4Cb5c6FE4e3F2fecacFcb9477F42ce8c78",
+      "name": "InkScore Zenith"
+    },
+    {
+      "address": "0xfFFbD67f37e1e9fd9d9EBEf9B687daa72a33da64",
+      "name": "INKverse"
+    },
+    {
+      "address": "0xE4e5D5170Ba5cae36D1876893D4b218E8Ed19C91",
+      "name": "InkySquad"
+    },
+    {
+      "address": "0xD7C28129Baf6E11e4F3516B212c50b44cF4e1D6A",
+      "name": "KrakRocks (Onchain)"
+    },
+    {
+      "address": "0xD4fF4Ab9286AfF65C89c9df61323E5994B5F78d1",
+      "name": "Lady Boi"
+    },
+    {
+      "address": "0x401Eb692882A193Aa78e830d8762939B1897c835",
+      "name": "Nobodies Secret Society"
+    },
+    {
+      "address": "0x2BFD28383996A0717f50819d1A51Bd2Cea6F929d",
+      "name": "Octocore"
+    },
+    {
+      "address": "0xF36f2b318954aCe0b9B8Cffbaf0df282d56B6ded",
+      "name": "Onchain InkPunks"
+    },
+    {
+      "address": "0x1cAf206358cCF6f4AFB2cCc0fdbD275cdC8eD106",
+      "name": "Orcs on Ink"
+    },
+    {
       "address": "0x3eA71c6abDE8a1b3CF6E5683761a7378B4e9E448",
-      "name": "PRTSCN",
-      "x": "",
-      "note": "replace or remove - this is the address from your screenshot, confirm it before trusting it"
+      "name": "PRTSCN"
+    },
+    {
+      "address": "0x02DE143FFC91c9c4f55C00e35E54Ae8Eb59bB0F8",
+      "name": "PULSE Cities"
+    },
+    {
+      "address": "0x25Aa78Ab6785A4b0aeFF5c170998992Fd958d43d",
+      "name": "Rekt Ink"
+    },
+    {
+      "address": "0x1c9838cdC00fA39d953a54c755b95605Ed5Ea49c",
+      "name": "Shellies"
+    },
+    {
+      "address": "0x43f510f273C3c344004277a014da7940F7E07B61",
+      "name": "SpamBurglars"
+    },
+    {
+      "address": "0xC28f88E0BF86C800350Ba5ad75269db2199106A4",
+      "name": "Squink"
+    },
+    {
+      "address": "0x46625E7de9894D83fca49E79cB53B5C25550cE99",
+      "name": "Templars of the Storm"
+    },
+    {
+      "address": "0xb7C8E0eAd646F0a466cDb5A6305b96997409916c",
+      "name": "THE 404 MACHINE"
+    },
+    {
+      "address": "0x7c701C0148E0e965065AA05E008AC9341E6eFC6c",
+      "name": "WIRED"
     }
   ]
 }

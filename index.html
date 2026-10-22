@@ -306,6 +306,8 @@
     white-space: nowrap;
   }
   .tag.collection { color: var(--violet); border-color: var(--violet); background: var(--violet-2); }
+  .tag.scam { color: #b91c1c; border-color: #b91c1c; background: #fef2f2; cursor: help; }
+  .tag.src  { color: var(--green); border-color: var(--green); background: #f0fdf4; cursor: help; }
   .tag.verified {
     color: #fff; background: var(--violet); border-color: var(--violet);
   }
@@ -480,8 +482,8 @@
 
   <div class="controls">
     <div class="seg" role="group" aria-label="Filter by contract kind">
-      <button type="button" data-filter="verified" aria-pressed="true">Verified</button>
-      <button type="button" data-filter="collection" aria-pressed="false">Collections</button>
+      <button type="button" data-filter="collection" aria-pressed="true">Collections</button>
+      <button type="button" data-filter="verified" aria-pressed="false">Verified</button>
       <button type="button" data-filter="protocol" aria-pressed="false">Utility</button>
       <button type="button" data-filter="all" aria-pressed="false">All</button>
     </div>
@@ -599,11 +601,13 @@
   var ACT_GAP   = 240;         // ms between per-contract reads
   var ACT_WINDOW = 150;        // how many collections get measured
 
-  var state = { rows: [], filter: "verified", sort: "holders", dir: -1, q: "", open: null,
+  var state = { rows: [], filter: "collection", sort: "holders", dir: -1, q: "", open: null,
                 minHolders: 50, dedupe: true, minTurn: 0, curate: false };
   var tcache = Object.create(null);   // addr -> transfers count, or "loading"
   var verified = Object.create(null); // lowercased address -> curated entry
   var verifiedCount = 0;
+  var srcInfo = Object.create(null);   // addr -> { scam, srcVerified } from the explorer
+  var clashBusy = false;
   var picked = Object.create(null);   // addr -> {address, name} chosen while curating
   var pickedCount = 0;
   var activityBusy = false;
@@ -767,7 +771,6 @@
     for (var va in verified) {
       if (!picked[va]) { picked[va] = { address: verified[va].address, name: verified[va].name || "" }; pickedCount++; }
     }
-    if (!verifiedCount) state.filter = "collection";
     syncTabs();
 
     var url = API + "/tokens?type=ERC-721";
@@ -938,14 +941,20 @@
     // Keep the one with the most holders and drop the rest from the default view.
     if (state.dedupe) {
       var best = Object.create(null);
+      function rank(r) {
+        var info = srcInfo[r.addr];
+        var n = 0;
+        if (r.verified) n += 1e12;                       // a human said so
+        if (info && info.scam) n -= 1e11;                // the explorer flagged it
+        if (info && info.srcVerified) n += 1e10;         // source published
+        return n + (r.holders || 0);
+      }
       out.forEach(function (r) {
         var k = (r.name || "").trim().toLowerCase();
         if (!k) return;
         var cur = best[k];
         if (!cur) { best[k] = r; return; }
-        if (cur.verified && !r.verified) return;
-        if (r.verified && !cur.verified) { best[k] = r; return; }
-        if ((r.holders || 0) > (cur.holders || 0)) best[k] = r;
+        if (rank(r) > rank(cur)) best[k] = r;
       });
       out = out.filter(function (r) {
         var k = (r.name || "").trim().toLowerCase();
@@ -984,6 +993,41 @@
       return (x - y) * dir;
     });
     return out;
+  }
+
+  // When several contracts share a name only one is the original. Ask the
+  // explorer about those few: it knows whether a contract's source was verified
+  // and whether it has been flagged as a scam, and copycats are rarely either.
+  async function resolveClashes(rows) {
+    if (clashBusy) return;
+    var byName = Object.create(null);
+    rows.forEach(function (r) {
+      var k = (r.name || "").trim().toLowerCase();
+      if (!k) return;
+      (byName[k] = byName[k] || []).push(r);
+    });
+
+    var todo = [];
+    for (var k in byName) {
+      if (byName[k].length < 2) continue;
+      byName[k].forEach(function (r) {
+        if (srcInfo[r.addr] === undefined && todo.length < 120) todo.push(r.addr);
+      });
+    }
+    if (!todo.length) return;
+
+    clashBusy = true;
+    for (var i = 0; i < todo.length; i++) {
+      var a = todo[i];
+      srcInfo[a] = null;
+      try {
+        var d = await req(API + "/addresses/" + a, 2);
+        srcInfo[a] = d ? { scam: !!d.is_scam, srcVerified: !!d.is_verified } : null;
+      } catch (e) { /* leave it unknown */ }
+      await sleep(ACT_GAP);
+    }
+    clashBusy = false;
+    paint();
   }
 
   // Transfer counts need one request per contract, so they are fetched only
@@ -1028,6 +1072,7 @@
     // kick the loader first: with an activity filter on, the view starts empty
     // and would otherwise never ask for the data that fills it.
     loadActivity(base);
+    if (listDone) resolveClashes(state.rows);
 
     if (!rows.length) {
       var waiting = state.minTurn && base.length && measured() < base.length;
@@ -1061,6 +1106,10 @@
             (r.symbol ? esc(r.symbol) + " · " : "") + esc(shortAddr(r.addr)) +
             ' <span class="tag' + (r.verified ? " verified" : (r.kind === "collection" ? " collection" : "")) + '">' +
               (r.verified ? "\u2713 Verified" : esc(r.why)) + '</span>' +
+            (srcInfo[r.addr] && srcInfo[r.addr].scam
+              ? ' <span class="tag scam" title="Flagged as a scam by the Ink block explorer.">flagged scam</span>' : '') +
+            (srcInfo[r.addr] && srcInfo[r.addr].srcVerified && !r.verified
+              ? ' <span class="tag src" title="The contract\'s source code is published and verified on the explorer.">source published</span>' : '') +
           '</span></div></td>' +
           '<td class="num" data-label="Holders">' + fmt(r.holders) + '</td>' +
           '<td class="num" data-label="Supply">' + fmt(r.supply) + '</td>' +
