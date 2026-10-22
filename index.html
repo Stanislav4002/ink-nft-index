@@ -1009,8 +1009,11 @@
 
     var todo = [];
     for (var k in byName) {
-      if (byName[k].length < 2) continue;
-      byName[k].forEach(function (r) {
+      var group = byName[k];
+      if (group.length < 2) continue;
+      // if one of them is already curated, the winner is settled - don't ask
+      if (group.some(function (r) { return r.verified; })) continue;
+      group.forEach(function (r) {
         if (srcInfo[r.addr] === undefined && todo.length < 120) todo.push(r.addr);
       });
     }
@@ -1034,9 +1037,12 @@
   // for the rows actually on screen, in one batch, and cached.
   async function loadActivity(rows) {
     if (activityBusy || !listDone) return;
+    var queue = rows.slice().sort(function (a, b) {
+      return (b.verified ? 1 : 0) - (a.verified ? 1 : 0);
+    });
     var want = [];
-    for (var i = 0; i < rows.length && want.length < ACT_WINDOW; i++) {
-      var a = rows[i].addr;
+    for (var i = 0; i < queue.length && want.length < ACT_WINDOW; i++) {
+      var a = queue[i].addr;
       if (tcache[a] === undefined) want.push(a);
     }
     if (!want.length) return;
