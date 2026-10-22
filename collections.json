@@ -1,0 +1,26 @@
+{
+  "_readme": [
+    "Verified Ink NFT collections, curated by hand.",
+    "",
+    "Authenticity is not something a blockchain records. Anyone can deploy a",
+    "contract called PRTSCN, and several people have. The only way to tell the",
+    "real one is for a person who knows the ecosystem to say so - which is what",
+    "this file is.",
+    "",
+    "To add a collection: copy its address from the site (open a row, press",
+    "'Copy JSON entry') and paste the line into the list below. Commit the file.",
+    "Vercel redeploys on its own and the site picks it up.",
+    "",
+    "Fields: address is required. name is for your own reference only - the site",
+    "always shows the name the contract itself reports. x and note are optional."
+  ],
+
+  "collections": [
+    {
+      "address": "0x3eA71c6abDE8a1b3CF6E5683761a7378B4e9E448",
+      "name": "PRTSCN",
+      "x": "",
+      "note": "replace or remove - this is the address from your screenshot, confirm it before trusting it"
+    }
+  ]
+}

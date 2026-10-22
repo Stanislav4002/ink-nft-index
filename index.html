@@ -206,6 +206,37 @@
   .search:focus { outline: 3px solid var(--violet); outline-offset: 2px; }
 
   /* ----------------------------------------------------------------- table */
+  .curatebtn { cursor: pointer; font-family: var(--ui); }
+  .curatebtn[aria-pressed="true"] { background: var(--violet); color: #fff; border-color: var(--violet); }
+
+  .curatebar {
+    background: var(--violet-2);
+    border: 2px solid var(--ink);
+    border-radius: 12px;
+    padding: 15px 17px;
+    margin-bottom: 14px;
+    box-shadow: 4px 4px 0 var(--ink);
+  }
+  .curatebar p { margin: 0 0 12px; font-size: 13px; max-width: 70ch; }
+  .curatebar code { font-family: var(--mono); font-size: 12px; }
+  .curatebar #pickCount { font-family: var(--mono); font-weight: 700; white-space: nowrap; }
+  .curatebar textarea {
+    display: block;
+    width: 100%;
+    min-height: 190px;
+    margin-top: 13px;
+    padding: 12px;
+    border: 2px solid var(--ink);
+    border-radius: 9px;
+    background: var(--paper-2);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+    resize: vertical;
+  }
+  td.pickcell { padding-left: 16px; }
+  input.pick { width: 17px; height: 17px; accent-color: var(--violet); cursor: pointer; margin: 0; }
+
   .tablebox { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; min-width: 740px; }
 
@@ -275,6 +306,9 @@
     white-space: nowrap;
   }
   .tag.collection { color: var(--violet); border-color: var(--violet); background: var(--violet-2); }
+  .tag.verified {
+    color: #fff; background: var(--violet); border-color: var(--violet);
+  }
   .tag.odd { color: var(--amber); border-color: var(--amber); background: #fff7ed; cursor: help; }
 
   td.num { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -446,7 +480,8 @@
 
   <div class="controls">
     <div class="seg" role="group" aria-label="Filter by contract kind">
-      <button type="button" data-filter="collection" aria-pressed="true">Collections</button>
+      <button type="button" data-filter="verified" aria-pressed="true">Verified</button>
+      <button type="button" data-filter="collection" aria-pressed="false">Collections</button>
       <button type="button" data-filter="protocol" aria-pressed="false">Utility</button>
       <button type="button" data-filter="all" aria-pressed="false">All</button>
     </div>
@@ -469,6 +504,20 @@
     </label>
     <label class="chk"><input type="checkbox" id="dedupe" checked><span>Hide duplicate names</span></label>
     <input id="q" class="search" type="search" placeholder="Search name, symbol or contract address" autocomplete="off">
+    <button type="button" id="curate" class="chk curatebtn">Curate</button>
+  </div>
+
+  <div id="curatebar" class="curatebar" hidden>
+    <p>
+      Tick the contracts that are the real ones. When you are done, export the list and
+      replace <code>collections.json</code> in the repository with it.
+      <span id="pickCount"></span>
+    </p>
+    <div class="links">
+      <button type="button" class="copy" id="exportBtn">Export collections.json</button>
+      <button type="button" class="copy" id="clearBtn">Clear ticks</button>
+    </div>
+    <textarea id="exportOut" hidden readonly spellcheck="false"></textarea>
   </div>
 
   <div class="panel tablebox">
@@ -503,6 +552,14 @@
         collection is actually distributed. A collection of 2,000 pieces held by 1,700
         wallets is spread; the same 2,000 held by 150 wallets is not, and that is usually
         a more honest signal than floor price.
+      </p>
+      <p>
+        <strong>Verified is a human judgement, not a chain fact.</strong>
+        Nothing on-chain marks a contract as the official one, and on Ink several contracts
+        share a well-known collection's name. So the Verified list is kept by hand, in a
+        plain file anyone can read, and a verified contract is never hidden by any of the
+        filters. Everything else stays reachable under All &mdash; the copies are not
+        deleted, only moved out of the way.
       </p>
       <p>
         <strong>Turnover ranks movement, not standing.</strong>
@@ -542,9 +599,13 @@
   var ACT_GAP   = 240;         // ms between per-contract reads
   var ACT_WINDOW = 150;        // how many collections get measured
 
-  var state = { rows: [], filter: "collection", sort: "holders", dir: -1, q: "", open: null,
-                minHolders: 50, dedupe: true, minTurn: 0 };
+  var state = { rows: [], filter: "verified", sort: "holders", dir: -1, q: "", open: null,
+                minHolders: 50, dedupe: true, minTurn: 0, curate: false };
   var tcache = Object.create(null);   // addr -> transfers count, or "loading"
+  var verified = Object.create(null); // lowercased address -> curated entry
+  var verifiedCount = 0;
+  var picked = Object.create(null);   // addr -> {address, name} chosen while curating
+  var pickedCount = 0;
   var activityBusy = false;
   var listDone = false;        // measuring must not compete with the list load
   var rateLimited = false;
@@ -655,9 +716,59 @@
     throw new Error("explorer kept rate limiting the request");
   }
 
+  // Which contract is the real one is a human judgement, not a chain fact, so
+  // it lives in a file a person edits rather than in a heuristic.
+  var PICK_KEY = "ink-index-picks";
+
+  function loadPicks() {
+    try {
+      var raw = localStorage.getItem(PICK_KEY);
+      if (!raw) return;
+      JSON.parse(raw).forEach(function (c) {
+        if (c && c.address) { picked[c.address.toLowerCase()] = c; pickedCount++; }
+      });
+    } catch (e) { /* private window, blocked storage - curating still works */ }
+  }
+
+  function savePicks() {
+    try {
+      localStorage.setItem(PICK_KEY, JSON.stringify(pickList()));
+    } catch (e) { /* nothing to do - the export button still has everything */ }
+  }
+
+  function pickList() {
+    var out = [];
+    for (var k in picked) out.push(picked[k]);
+    out.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    return out;
+  }
+
+  async function loadVerified() {
+    try {
+      var res = await fetch("collections.json", { headers: { accept: "application/json" } });
+      if (!res.ok) return;
+      var data = await res.json();
+      (data.collections || []).forEach(function (c) {
+        if (!c || !c.address) return;
+        verified[String(c.address).toLowerCase()] = c;
+        verifiedCount++;
+      });
+    } catch (e) {
+      /* no curated list yet - the site still works, nothing is marked verified */
+    }
+  }
+
   async function load() {
     status("", "reading contracts from ink…");
     skeleton();
+    await loadVerified();
+    loadPicks();
+    // anything already in collections.json starts out ticked
+    for (var va in verified) {
+      if (!picked[va]) { picked[va] = { address: verified[va].address, name: verified[va].name || "" }; pickedCount++; }
+    }
+    if (!verifiedCount) state.filter = "collection";
+    syncTabs();
 
     var url = API + "/tokens?type=ERC-721";
     var seen = Object.create(null);
@@ -693,7 +804,10 @@
           // only and is withheld when the supply figure cannot be trusted.
           row.ratio  = (row.holders !== null && row.supply) ? row.holders / row.supply : null;
           row.spread = (!row.odd && row.ratio !== null) ? Math.min(1, row.ratio) : null;
-          var c = classify(row);
+          row.verified = !!verified[addr.toLowerCase()];
+          var c = row.verified
+            ? { kind: "collection", why: "Verified" }
+            : classify(row);
           row.kind = c.kind;
           row.why  = c.why;
           rows.push(row);
@@ -813,8 +927,9 @@
     var q = state.q.trim().toLowerCase();
 
     var out = state.rows.filter(function (r) {
-      if (state.filter !== "all" && r.kind !== state.filter) return false;
-      if (state.minHolders && (r.holders === null || r.holders < state.minHolders)) return false;
+      if (state.filter === "verified") { if (!r.verified) return false; }
+      else if (state.filter !== "all" && r.kind !== state.filter) return false;
+      if (!r.verified && state.minHolders && (r.holders === null || r.holders < state.minHolders)) return false;
       if (!q) return true;
       return (r.name + " " + r.symbol + " " + r.addr).toLowerCase().indexOf(q) !== -1;
     });
@@ -826,7 +941,11 @@
       out.forEach(function (r) {
         var k = (r.name || "").trim().toLowerCase();
         if (!k) return;
-        if (!best[k] || (r.holders || 0) > (best[k].holders || 0)) best[k] = r;
+        var cur = best[k];
+        if (!cur) { best[k] = r; return; }
+        if (cur.verified && !r.verified) return;
+        if (r.verified && !cur.verified) { best[k] = r; return; }
+        if ((r.holders || 0) > (cur.holders || 0)) best[k] = r;
       });
       out = out.filter(function (r) {
         var k = (r.name || "").trim().toLowerCase();
@@ -844,6 +963,7 @@
 
     if (state.minTurn) {
       out = out.filter(function (r) {
+        if (r.verified) return true;
         var tv = turnover(r);
         if (tv === null) return false;            // not measured yet - cannot vouch for it
         return !turnSure(r) || tv >= state.minTurn;
@@ -914,8 +1034,13 @@
       tbody.innerHTML = waiting
         ? '<tr><td colspan="7"><div class="state"><h3>Measuring activity</h3>' +
           '<p>Reading transfer counts for ' + fmt(base.length) + ' contracts. Rows appear as each one comes back.</p></div></td></tr>'
-        : '<tr><td colspan="7"><div class="state"><h3>Nothing matches</h3>' +
-          '<p>No contract in this view clears these filters.</p></div></td></tr>';
+        : (state.filter === "verified" && !verifiedCount
+            ? '<tr><td colspan="7"><div class="state"><h3>No collections verified yet</h3>' +
+              '<p>Anyone can deploy a contract under a known name, and several people have, so this list is kept by hand. ' +
+              'Open any row, press <code>Copy JSON entry</code>, and paste the line into <code>collections.json</code>.</p>' +
+              '</div></td></tr>'
+            : '<tr><td colspan="7"><div class="state"><h3>Nothing matches</h3>' +
+              '<p>No contract in this view clears these filters.</p></div></td></tr>');
       return;
     }
 
@@ -928,10 +1053,14 @@
       html +=
         '<tr class="row" data-addr="' + esc(r.addr) + '" tabindex="0" role="button" aria-expanded="' +
           (state.open === r.addr ? "true" : "false") + '">' +
-          '<td class="rank">' + (i + 1) + '</td>' +
+          (state.curate
+            ? '<td class="rank pickcell"><input type="checkbox" class="pick" data-a="' + esc(r.addr) +
+              '" data-n="' + esc(r.name) + '"' + (picked[r.addr.toLowerCase()] ? " checked" : "") + '></td>'
+            : '<td class="rank">' + (i + 1) + '</td>') +
           '<td><div class="nm"><b>' + esc(r.name) + '</b><span class="sub">' +
             (r.symbol ? esc(r.symbol) + " · " : "") + esc(shortAddr(r.addr)) +
-            ' <span class="tag' + (r.kind === "collection" ? " collection" : "") + '">' + esc(r.why) + '</span>' +
+            ' <span class="tag' + (r.verified ? " verified" : (r.kind === "collection" ? " collection" : "")) + '">' +
+              (r.verified ? "\u2713 Verified" : esc(r.why)) + '</span>' +
           '</span></div></td>' +
           '<td class="num" data-label="Holders">' + fmt(r.holders) + '</td>' +
           '<td class="num" data-label="Supply">' + fmt(r.supply) + '</td>' +
@@ -1032,12 +1161,21 @@
           '<a href="https://explorer.inkonchain.com/token/' + encodeURIComponent(r.addr) + '?tab=holders" target="_blank" rel="noopener">Holders</a>' +
           '<a href="https://opensea.io/assets/ink/' + encodeURIComponent(r.addr) + '" target="_blank" rel="noopener">OpenSea</a>' +
           '<button type="button" class="copy" data-copy="' + esc(r.addr) + '">Copy address</button>' +
+          '<button type="button" class="copy" data-copy=\'' +
+            esc('{ "address": "' + r.addr + '", "name": "' + String(r.name).replace(/"/g, "") + '" },') +
+          '\'>Copy JSON entry</button>' +
         '</div>' +
       '</div></td></tr>'
     );
   }
 
   // ------------------------------------------------------------------ events
+  function syncTabs() {
+    document.querySelectorAll(".seg button").forEach(function (o) {
+      o.setAttribute("aria-pressed", String(o.dataset.filter === state.filter));
+    });
+  }
+
   document.querySelectorAll(".seg button").forEach(function (b) {
     b.addEventListener("click", function () {
       state.filter = b.dataset.filter;
@@ -1084,6 +1222,57 @@
     paint();
   });
 
+  var curateBtn = document.getElementById("curate");
+  var curateBar = document.getElementById("curatebar");
+  var exportOut = document.getElementById("exportOut");
+
+  function refreshCount() {
+    document.getElementById("pickCount").textContent =
+      pickedCount ? "\u2014 " + pickedCount + " ticked" : "";
+  }
+
+  curateBtn.addEventListener("click", function () {
+    state.curate = !state.curate;
+    curateBtn.setAttribute("aria-pressed", String(state.curate));
+    curateBar.hidden = !state.curate;
+    if (state.curate && state.filter === "verified") {
+      state.filter = "all";                 // you cannot tick what is already hidden
+      syncTabs();
+    }
+    refreshCount();
+    paint();
+  });
+
+  document.getElementById("exportBtn").addEventListener("click", function () {
+    var body = {
+      _readme: "Verified Ink NFT collections, kept by hand. Replace this whole file when you export a new list.",
+      collections: pickList()
+    };
+    exportOut.value = JSON.stringify(body, null, 2);
+    exportOut.hidden = false;
+    exportOut.focus();
+    exportOut.select();
+    var btn = this;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(exportOut.value).then(function () {
+        btn.textContent = "Copied \u2014 paste over collections.json";
+        setTimeout(function () { btn.textContent = "Export collections.json"; }, 2600);
+      }).catch(function () {
+        btn.textContent = "Selected \u2014 copy it";
+        setTimeout(function () { btn.textContent = "Export collections.json"; }, 2600);
+      });
+    }
+  });
+
+  document.getElementById("clearBtn").addEventListener("click", function () {
+    picked = Object.create(null);
+    pickedCount = 0;
+    savePicks();
+    refreshCount();
+    exportOut.hidden = true;
+    paint();
+  });
+
   var q = document.getElementById("q");
   var qt;
   q.addEventListener("input", function () {
@@ -1092,6 +1281,21 @@
   });
 
   tbody.addEventListener("click", function (e) {
+    var box = e.target.closest("input.pick");
+    if (box) {
+      e.stopPropagation();
+      var key = box.dataset.a.toLowerCase();
+      if (box.checked) {
+        if (!picked[key]) pickedCount++;
+        picked[key] = { address: box.dataset.a, name: box.dataset.n || "" };
+      } else if (picked[key]) {
+        delete picked[key];
+        pickedCount--;
+      }
+      savePicks();
+      refreshCount();
+      return;
+    }
     var cp = e.target.closest(".copy");
     if (cp) {
       e.stopPropagation();
